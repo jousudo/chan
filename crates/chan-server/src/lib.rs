@@ -1392,7 +1392,7 @@ fn router(state: Arc<AppState>) -> Router {
     let settings_writes = settings_writes
         .route("/api/team-templates", post(api_save_team_template))
         .route(
-            "/api/team-templates/:name",
+            "/api/team-templates/{name}",
             delete(api_delete_team_template),
         )
         .route(
@@ -1443,9 +1443,9 @@ fn router(state: Arc<AppState>) -> Router {
         // template list even on a shared devserver. Writes are gated
         // in settings_writes above (they mutate the local machine).
         .route("/api/team-templates", get(api_list_team_templates))
-        .route("/api/team-templates/:name", get(api_get_team_template))
+        .route("/api/team-templates/{name}", get(api_get_team_template))
         .route(
-            "/api/team-templates/:name/export",
+            "/api/team-templates/{name}/export",
             get(api_export_team_template),
         )
         // cs terminal survey reply: completes the parked survey
