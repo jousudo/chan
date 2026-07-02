@@ -86,7 +86,7 @@ pub use progress::{
     eta_secs_from, progress_fn, NoProgress, ProgressCallback, ProgressEvent, ProgressStage,
 };
 pub use registry::{KnownWorkspace, Registry, DEFAULT_INDEX_EXCLUDED_DIRS};
-pub use teams::{Member, Position, TeamConfig};
+pub use teams::{Member, Position, SkillEntry, TeamConfig};
 pub use trash::{TrashEntry, TRASH_RETENTION_SECS};
 pub use vcs::{detect_parent_vcs, detect_workspace_vcs, is_vcs_control_path, VcsKind, VcsParent};
 pub use watch::{WatchCallback, WatchEvent, WatchHandle, WatchKind};

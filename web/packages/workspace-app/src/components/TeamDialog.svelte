@@ -1,7 +1,7 @@
 <script lang="ts">
   import { Bot, X } from "lucide-svelte";
   import { onMount } from "svelte";
-  import { api } from "../api/client";
+  import { api, type TeamTemplateInfo, type SkillEntry } from "../api/client";
   import {
     clearTeamWorkPending,
     closeTab,
@@ -29,7 +29,8 @@
     unassignMember,
     validateTeamConfig,
   } from "../state/teamDialog.svelte";
-  import { runTeamBootstrap, wireToDialog } from "../state/teamOrchestrator.svelte";
+  import { runTeamBootstrap, translateConfig, wireToDialog } from "../state/teamOrchestrator.svelte";
+  import { TEAM_DIR_DEFAULT } from "../state/teamConfigPath";
 
   /// Team Work dialog. Opens over the already-created Team Work Lead
   /// terminal (the dialog request
@@ -316,6 +317,153 @@
     if (e.target === e.currentTarget) onCancel();
   }
 
+  // ---- Team templates --------------------------------------------------
+  let templates = $state<TeamTemplateInfo[]>([]);
+  let templatesOpen = $state(false);
+  let templatesBusy = $state(false);
+  let templateSaveName = $state("");
+  let templateSaveError = $state<string | null>(null);
+  let templateImportError = $state<string | null>(null);
+  let templateImportInput = $state<HTMLInputElement | undefined>();
+
+  async function refreshTemplates(): Promise<void> {
+    try {
+      templates = await api.listTeamTemplates();
+    } catch {
+      templates = [];
+    }
+  }
+
+  async function applyTemplate(name: string): Promise<void> {
+    templatesBusy = true;
+    templateSaveError = null;
+    try {
+      const wire = await api.getTeamTemplate(name);
+      // Keep the current team directory; the template does not carry a
+      // meaningful workspace path, so the user's existing dir stays.
+      const loaded = wireToDialog(wire, config.teamDir || TEAM_DIR_DEFAULT);
+      config = resizeTeamMembers({ ...loaded, configMode: "new" });
+      loadError = null;
+      loadedConfig = null;
+    } catch (err) {
+      templateSaveError = `load failed: ${(err as Error).message}`;
+    } finally {
+      templatesBusy = false;
+    }
+  }
+
+  async function saveAsTemplate(): Promise<void> {
+    const name = templateSaveName.trim();
+    if (!name) {
+      templateSaveError = "Enter a template name";
+      return;
+    }
+    templatesBusy = true;
+    templateSaveError = null;
+    try {
+      const wire = translateConfig(config);
+      await api.saveTeamTemplate(name, wire);
+      templateSaveName = "";
+      await refreshTemplates();
+    } catch (err) {
+      templateSaveError = (err as Error).message;
+    } finally {
+      templatesBusy = false;
+    }
+  }
+
+  async function deleteTemplate(name: string): Promise<void> {
+    templatesBusy = true;
+    try {
+      await api.deleteTeamTemplate(name);
+      await refreshTemplates();
+    } catch (err) {
+      templateSaveError = `delete failed: ${(err as Error).message}`;
+    } finally {
+      templatesBusy = false;
+    }
+  }
+
+  async function onImportFile(e: Event): Promise<void> {
+    const file = (e.currentTarget as HTMLInputElement).files?.[0];
+    if (!file) return;
+    templatesBusy = true;
+    templateImportError = null;
+    try {
+      await api.importTeamTemplate(file);
+      await refreshTemplates();
+    } catch (err) {
+      templateImportError = `import failed: ${(err as Error).message}`;
+    } finally {
+      templatesBusy = false;
+      // Reset the file input so the same file can be re-imported after
+      // a name collision is resolved by the user renaming the template.
+      if (templateImportInput) templateImportInput.value = "";
+    }
+  }
+
+  function toggleTemplates(): void {
+    templatesOpen = !templatesOpen;
+    if (templatesOpen && templates.length === 0) {
+      void refreshTemplates();
+    }
+  }
+
+  // ---- Team skills (Engineering Standards) -------------------------
+  let skillsOpen = $state(false);
+  let skillAddName = $state("");
+  let skillAddContent = $state("");
+  let skillAddOpen = $state(false);
+  let skillEditIdx = $state<number | null>(null);
+  let skillEditContent = $state("");
+
+  function addSkill(): void {
+    const name = skillAddName.trim();
+    if (!name) return;
+    config = { ...config, skills: [...config.skills, { name, content: skillAddContent }] };
+    skillAddName = "";
+    skillAddContent = "";
+    skillAddOpen = false;
+  }
+
+  function removeSkill(idx: number): void {
+    const removed = config.skills[idx].name;
+    config = {
+      ...config,
+      skills: config.skills.filter((_, i) => i !== idx),
+      members: config.members.map((m) => ({
+        ...m,
+        skills: m.skills.filter((s) => s !== removed),
+      })),
+    };
+    if (skillEditIdx === idx) skillEditIdx = null;
+  }
+
+  function startEditSkill(idx: number): void {
+    skillEditIdx = idx;
+    skillEditContent = config.skills[idx].content;
+  }
+
+  function saveSkillEdit(idx: number): void {
+    config = {
+      ...config,
+      skills: config.skills.map((s, i) =>
+        i === idx ? { ...s, content: skillEditContent } : s,
+      ),
+    };
+    skillEditIdx = null;
+  }
+
+  function toggleMemberSkill(memberIdx: number, skillName: string): void {
+    const member = config.members[memberIdx];
+    const has = member.skills.includes(skillName);
+    setMemberField(
+      memberIdx,
+      "skills",
+      has ? member.skills.filter((s) => s !== skillName) : [...member.skills, skillName],
+    );
+  }
+
   function onKeydown(e: KeyboardEvent): void {
     if (e.key === "Escape" && !busy) {
       // Capture phase + stopPropagation: Cmd+P opens this dialog OVER a
@@ -365,7 +513,7 @@
           autocomplete="off"
         />
         <span class="team-field-hint">
-          Renders as <code>{handleOf({ name: config.hostName || "(name)", command: "", env: "", isLead: false })}</code>
+          Renders as <code>{handleOf({ name: config.hostName || "(name)", command: "", env: "", isLead: false, skills: [] })}</code>
           when joining the team.
         </span>
       </label>
@@ -466,22 +614,226 @@
           </span>
         </label>
 
-        {#if config.configMode === "new"}
-          <label class="team-field">
-            <span class="team-field-label">Brief (optional)</span>
-            <textarea
-              bind:value={config.brief}
-              rows="5"
-              placeholder="Read ./path/to/brief.md"
-              autocomplete="off"
-            ></textarea>
-            <span class="team-field-hint">
-              Folded verbatim into the generated <code>bootstrap.md</code> (its
-              own section after the Roster), so this round's custom operating
-              instructions survive a regenerate. Leave empty for the generic
-              bootstrap.
+        <label class="team-field">
+          <span class="team-field-label">Brief (optional)</span>
+          <textarea
+            bind:value={config.brief}
+            rows="5"
+            placeholder="Describe the team's workflow, approval flow, and communication hierarchy."
+            autocomplete="off"
+          ></textarea>
+          <span class="team-field-hint">
+            Team process doc folded verbatim into <code>bootstrap.md</code> (after
+            the Roster). Persisted in <code>config.toml</code> and carried by
+            exported templates. Leave empty for the generic bootstrap.
+          </span>
+        </label>
+      </fieldset>
+
+      <!-- Templates: globally saved TeamConfig snapshots in ~/.chan/team-templates/.
+           Open/closed state persists for the dialog's lifetime; the list is
+           fetched lazily on first open. Collapsed by default to keep the dialog
+           compact for users who never use templates. -->
+      <fieldset class="team-templates-fieldset">
+        <legend>
+          <button
+            type="button"
+            class="team-templates-toggle"
+            onclick={toggleTemplates}
+            aria-expanded={templatesOpen}
+          >
+            Templates
+            <span class="team-templates-caret" aria-hidden="true">
+              {templatesOpen ? "v" : ">"}
             </span>
-          </label>
+          </button>
+        </legend>
+
+        {#if templatesOpen}
+          <div class="team-templates-body">
+            {#if templates.length === 0}
+              <p class="team-templates-empty">No saved templates.</p>
+            {:else}
+              <ul class="team-templates-list">
+                {#each templates as t (t.name)}
+                  <li class="team-templates-item">
+                    <span class="team-templates-name">{t.name}</span>
+                    <span class="team-templates-meta">
+                      {t.team_name} &middot; {t.member_count}
+                      member{t.member_count === 1 ? "" : "s"}
+                    </span>
+                    <span class="team-templates-actions">
+                      <button
+                        type="button"
+                        class="team-tpl-btn"
+                        disabled={templatesBusy}
+                        onclick={() => void applyTemplate(t.name)}
+                        title="Load this template into the form"
+                      >Load</button>
+                      <a
+                        class="team-tpl-btn"
+                        href={api.teamTemplateExportUrl(t.name)}
+                        download="{t.name}.toml"
+                        title="Download as TOML"
+                      >Export</a>
+                      <button
+                        type="button"
+                        class="team-tpl-btn team-tpl-danger"
+                        disabled={templatesBusy}
+                        onclick={() => void deleteTemplate(t.name)}
+                        title="Delete this template"
+                      >Delete</button>
+                    </span>
+                  </li>
+                {/each}
+              </ul>
+            {/if}
+
+            <div class="team-tpl-save-row">
+              <input
+                type="text"
+                class="team-tpl-name-input"
+                bind:value={templateSaveName}
+                placeholder="template-name"
+                autocomplete="off"
+              />
+              <button
+                type="button"
+                class="team-tpl-btn"
+                disabled={templatesBusy || !templateSaveName.trim()}
+                onclick={() => void saveAsTemplate()}
+              >Save as template</button>
+            </div>
+
+            <div class="team-tpl-import-row">
+              <label class="team-tpl-btn team-tpl-import-label">
+                Import TOML
+                <input
+                  bind:this={templateImportInput}
+                  type="file"
+                  accept=".toml"
+                  class="team-tpl-file-input"
+                  onchange={onImportFile}
+                />
+              </label>
+              {#if templateImportError}
+                <span class="team-tpl-error" role="alert">{templateImportError}</span>
+              {/if}
+            </div>
+
+            {#if templateSaveError}
+              <p class="team-tpl-error" role="alert">{templateSaveError}</p>
+            {/if}
+          </div>
+        {/if}
+      </fieldset>
+
+      <!-- Engineering standards: named skill profiles embedded in the team config.
+           Each skill applies to all members; members may also carry additional
+           skills from this pool. Content is embedded inline for portability
+           (no .agents/skills/ dependency in the destination workspace). -->
+      <fieldset class="team-skills-fieldset">
+        <legend>
+          <button
+            type="button"
+            class="team-skills-toggle"
+            onclick={() => { skillsOpen = !skillsOpen; }}
+            aria-expanded={skillsOpen}
+          >
+            Engineering Standards
+            {#if config.skills.length > 0}
+              <span class="team-skills-count">({config.skills.length})</span>
+            {/if}
+            <span class="team-skills-caret" aria-hidden="true">
+              {skillsOpen ? "v" : ">"}
+            </span>
+          </button>
+        </legend>
+
+        {#if skillsOpen}
+          <div class="team-skills-body">
+            {#if config.skills.length === 0}
+              <p class="team-skills-empty">No skills defined. Add a skill to embed technical standards in this team config.</p>
+            {:else}
+              <ul class="team-skills-list">
+                {#each config.skills as skill, idx (idx)}
+                  <li class="team-skills-item">
+                    <div class="team-skills-item-header">
+                      <span class="team-skills-name">{skill.name}</span>
+                      <span class="team-skills-item-actions">
+                        <button
+                          type="button"
+                          class="team-skill-btn"
+                          onclick={() => skillEditIdx === idx ? (skillEditIdx = null) : startEditSkill(idx)}
+                        >
+                          {skillEditIdx === idx ? "Cancel" : "Edit"}
+                        </button>
+                        <button
+                          type="button"
+                          class="team-skill-btn team-skill-danger"
+                          onclick={() => removeSkill(idx)}
+                        >Delete</button>
+                      </span>
+                    </div>
+                    {#if skillEditIdx === idx}
+                      <textarea
+                        class="team-skill-editor"
+                        bind:value={skillEditContent}
+                        rows="8"
+                        autocomplete="off"
+                        placeholder="Skill content (Markdown)"
+                      ></textarea>
+                      <button
+                        type="button"
+                        class="team-skill-btn"
+                        onclick={() => saveSkillEdit(idx)}
+                      >Save</button>
+                    {:else}
+                      <pre class="team-skill-preview">{skill.content.slice(0, 120)}{skill.content.length > 120 ? "..." : ""}</pre>
+                    {/if}
+                  </li>
+                {/each}
+              </ul>
+            {/if}
+
+            {#if skillAddOpen}
+              <div class="team-skill-add-form">
+                <input
+                  type="text"
+                  class="team-skill-name-input"
+                  bind:value={skillAddName}
+                  placeholder="skill-name (e.g. rustacean)"
+                  autocomplete="off"
+                />
+                <textarea
+                  class="team-skill-editor"
+                  bind:value={skillAddContent}
+                  rows="8"
+                  autocomplete="off"
+                  placeholder="Paste the skill profile content (Markdown)"
+                ></textarea>
+                <div class="team-skill-add-actions">
+                  <button
+                    type="button"
+                    class="team-skill-btn"
+                    disabled={!skillAddName.trim()}
+                    onclick={addSkill}
+                  >Add skill</button>
+                  <button
+                    type="button"
+                    class="team-skill-btn"
+                    onclick={() => { skillAddOpen = false; skillAddName = ""; skillAddContent = ""; }}
+                  >Cancel</button>
+                </div>
+              </div>
+            {:else}
+              <button
+                type="button"
+                class="team-skill-btn"
+                onclick={() => { skillAddOpen = true; }}
+              >+ Add skill</button>
+            {/if}
+          </div>
         {/if}
       </fieldset>
 
@@ -563,6 +915,21 @@
               {/if}
             {/if}
           </div>
+          {#if config.skills.length > 0}
+            <div class="team-member-skills">
+              <span class="team-member-skills-label">Additional skills:</span>
+              {#each config.skills as skill (skill.name)}
+                <label class="team-member-skill-check">
+                  <input
+                    type="checkbox"
+                    checked={member.skills.includes(skill.name)}
+                    onchange={() => toggleMemberSkill(idx, skill.name)}
+                  />
+                  {skill.name}
+                </label>
+              {/each}
+            </div>
+          {/if}
         {/each}
       </fieldset>
 
@@ -1023,5 +1390,297 @@
   .team-dialog-cancel:disabled {
     opacity: 0.5;
     cursor: not-allowed;
+  }
+  .team-templates-fieldset {
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 0;
+  }
+  .team-templates-fieldset legend {
+    padding: 0 6px;
+    font-size: 0.75rem;
+    color: var(--text-secondary);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+  }
+  .team-templates-toggle {
+    background: none;
+    border: none;
+    color: inherit;
+    font: inherit;
+    font-size: 0.75rem;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    padding: 0;
+  }
+  .team-templates-caret {
+    font-style: normal;
+  }
+  .team-templates-body {
+    padding: 8px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .team-templates-empty {
+    margin: 0;
+    font-size: 0.8rem;
+    color: var(--text-secondary);
+  }
+  .team-templates-list {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+  .team-templates-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+    padding: 4px 0;
+    border-bottom: 1px solid var(--border);
+  }
+  .team-templates-item:last-child {
+    border-bottom: none;
+  }
+  .team-templates-name {
+    font-size: 0.85rem;
+    font-weight: 500;
+  }
+  .team-templates-meta {
+    font-size: 0.75rem;
+    color: var(--text-secondary);
+    flex: 1;
+  }
+  .team-templates-actions {
+    display: flex;
+    gap: 4px;
+  }
+  .team-tpl-btn {
+    padding: 3px 8px;
+    font: inherit;
+    font-size: 0.75rem;
+    border-radius: 4px;
+    border: 1px solid var(--border);
+    background: var(--bg);
+    color: var(--text);
+    cursor: pointer;
+    text-decoration: none;
+    display: inline-flex;
+    align-items: center;
+  }
+  .team-tpl-btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+  .team-tpl-danger {
+    color: var(--danger-text, #c0392b);
+    border-color: var(--danger-text, #c0392b);
+  }
+  .team-tpl-save-row {
+    display: flex;
+    gap: 6px;
+    align-items: center;
+  }
+  .team-tpl-name-input {
+    flex: 1;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 4px 6px;
+    color: var(--text);
+    font: inherit;
+    font-size: 0.85rem;
+  }
+  .team-tpl-import-row {
+    display: flex;
+    gap: 6px;
+    align-items: center;
+    flex-wrap: wrap;
+  }
+  .team-tpl-import-label {
+    cursor: pointer;
+  }
+  .team-tpl-file-input {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    opacity: 0;
+    pointer-events: none;
+  }
+  .team-tpl-error {
+    margin: 0;
+    font-size: 0.8rem;
+    color: var(--danger-text, #c0392b);
+  }
+
+  /* Engineering Standards (skills) fieldset */
+  .team-skills-fieldset {
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 0;
+  }
+  .team-skills-fieldset legend {
+    padding: 0 6px;
+    font-size: 0.75rem;
+    color: var(--text-secondary);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+  }
+  .team-skills-toggle {
+    background: none;
+    border: none;
+    color: inherit;
+    font: inherit;
+    font-size: 0.75rem;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    padding: 0;
+  }
+  .team-skills-count {
+    font-style: normal;
+    color: var(--accent);
+  }
+  .team-skills-caret {
+    font-style: normal;
+  }
+  .team-skills-body {
+    padding: 8px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .team-skills-empty {
+    margin: 0;
+    font-size: 0.8rem;
+    color: var(--text-secondary);
+  }
+  .team-skills-list {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+  .team-skills-item {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding: 6px 0;
+    border-bottom: 1px solid var(--border);
+  }
+  .team-skills-item:last-child {
+    border-bottom: none;
+  }
+  .team-skills-item-header {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .team-skills-name {
+    font-size: 0.85rem;
+    font-weight: 500;
+    flex: 1;
+  }
+  .team-skills-item-actions {
+    display: flex;
+    gap: 4px;
+  }
+  .team-skill-preview {
+    margin: 0;
+    font-size: 0.75rem;
+    color: var(--text-secondary);
+    background: var(--bg);
+    border-radius: 4px;
+    padding: 4px 6px;
+    white-space: pre-wrap;
+    word-break: break-word;
+    max-height: 3.5rem;
+    overflow: hidden;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  .team-skill-editor {
+    width: 100%;
+    resize: vertical;
+    min-height: 6rem;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 6px 8px;
+    color: var(--text);
+    font: inherit;
+    font-size: 0.8rem;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    box-sizing: border-box;
+  }
+  .team-skill-add-form {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+  .team-skill-name-input {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 4px 6px;
+    color: var(--text);
+    font: inherit;
+    font-size: 0.85rem;
+  }
+  .team-skill-add-actions {
+    display: flex;
+    gap: 6px;
+  }
+  .team-skill-btn {
+    padding: 3px 8px;
+    font: inherit;
+    font-size: 0.75rem;
+    border-radius: 4px;
+    border: 1px solid var(--border);
+    background: var(--bg);
+    color: var(--text);
+    cursor: pointer;
+  }
+  .team-skill-btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+  .team-skill-danger {
+    color: var(--danger-text, #c0392b);
+    border-color: var(--danger-text, #c0392b);
+  }
+
+  /* Per-member additional skills (shown when team has skills defined) */
+  .team-member-skills {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+    padding: 2px 0 4px 22px;
+  }
+  .team-member-skills-label {
+    font-size: 0.72rem;
+    color: var(--text-secondary);
+    white-space: nowrap;
+  }
+  .team-member-skill-check {
+    display: flex;
+    align-items: center;
+    gap: 3px;
+    font-size: 0.75rem;
+    color: var(--text-secondary);
+    cursor: pointer;
   }
 </style>

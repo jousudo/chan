@@ -93,7 +93,7 @@ export function memberHandle(member: TeamMemberDraft, autoPrefix: boolean): stri
 /// same layout the user saw on save.
 export function translateConfig(config: TeamDialogConfig): TeamConfigWire {
   const hostHandle = memberHandle(
-    { name: config.hostName, command: "", env: "", isLead: false },
+    { name: config.hostName, command: "", env: "", isLead: false, skills: [] },
     config.autoPrefix,
   );
   const positions = memberPositions(config);
@@ -117,9 +117,10 @@ export function translateConfig(config: TeamDialogConfig): TeamConfigWire {
     // the Rust algorithm.
     const pos = positions[idx];
     if (pos) member.position = pos;
+    if (m.skills.length > 0) member.skills = m.skills;
     return member;
   });
-  return {
+  const wire: TeamConfigWire = {
     team_name: teamNameFromDir(config.teamDir),
     host_name: config.hostName,
     host_handle: hostHandle,
@@ -129,6 +130,9 @@ export function translateConfig(config: TeamDialogConfig): TeamConfigWire {
     created_at: new Date().toISOString(),
     members,
   };
+  if (config.brief.trim()) wire.brief = config.brief;
+  if (config.skills.length > 0) wire.skills = config.skills;
+  return wire;
 }
 
 /// Map each member index to its split-grid `{row, col}` position.
@@ -179,6 +183,7 @@ export function wireToDialog(
       command: m.command,
       env: envText,
       isLead: m.is_lead,
+      skills: m.skills ?? [],
     };
   });
   const size = Math.max(members.length, 1);
@@ -192,9 +197,8 @@ export function wireToDialog(
     mcpEnv: wire.mcp_env,
     members,
     realEstate: realEstateFromWire(wire, size),
-    // The brief is not persisted in config.toml, so a loaded team starts with
-    // an empty brief field (Load never regenerates the bootstrap anyway).
-    brief: "",
+    brief: wire.brief ?? "",
+    skills: wire.skills ?? [],
   };
 }
 

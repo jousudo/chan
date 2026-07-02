@@ -2644,7 +2644,7 @@ describe("Team Work dialog reload-survival (#4)", () => {
       ...defaultTeamConfig(),
       teamDir: "secret-team",
       members: [
-        { name: "Lead", command: "claude", env: "TOKEN=hunter2", isLead: true },
+        { name: "Lead", command: "claude", env: "TOKEN=hunter2", isLead: true, skills: [] },
       ],
     });
 

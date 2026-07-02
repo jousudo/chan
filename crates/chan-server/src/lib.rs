@@ -95,22 +95,24 @@ use bus::{make_progress_broadcast, make_watch_bridge};
 use routes::{
     api_backlinks, api_build_info, api_cloud_workspaces, api_create_draft, api_create_file,
     api_create_terminal, api_cs_link_create, api_delete_file, api_delete_session,
-    api_delete_terminal, api_discard_draft, api_excluded_dirs_get, api_excluded_dirs_put,
-    api_fonts_source_code_pro_download, api_fs_graph, api_fs_transfer, api_get_config,
-    api_get_contacts, api_get_mentions, api_get_server_config, api_get_session, api_get_workspace,
-    api_graph, api_headings, api_health, api_index_rebuild, api_index_status, api_indexing_state,
-    api_inspect_draft, api_inspector, api_language_graph, api_link_targets, api_links,
-    api_list_files, api_list_sessions, api_list_windows, api_metadata_export, api_metadata_import,
-    api_move, api_patch_config, api_patch_server_config, api_patch_workspace, api_post_attachment,
-    api_post_contacts_import, api_preflight, api_preflight_decision, api_promote_draft,
-    api_put_session, api_read_file, api_report_dir, api_report_file, api_report_prefix,
-    api_reports_disable, api_reports_enable, api_reports_state, api_resolve_link,
-    api_restart_terminal, api_screensaver_clear_pin, api_screensaver_patch,
-    api_screensaver_set_pin, api_screensaver_state, api_screensaver_verify, api_search_content,
-    api_search_files, api_session_handover_reply, api_set_terminal_broadcast, api_storage_reset,
-    api_survey_reply, api_team_config_read, api_team_config_write, api_terminal_next_name,
-    api_terminal_ws, api_terminals_roster, api_upload_file, api_window_reply,
-    api_workspace_bootstrap, api_write_file, spawn_roster_broadcaster, ws_upgrade,
+    api_delete_team_template, api_delete_terminal, api_discard_draft, api_excluded_dirs_get,
+    api_excluded_dirs_put, api_export_team_template, api_fonts_source_code_pro_download,
+    api_fs_graph, api_fs_transfer, api_get_config, api_get_contacts, api_get_mentions,
+    api_get_server_config, api_get_session, api_get_team_template, api_get_workspace, api_graph,
+    api_headings, api_health, api_import_team_template, api_index_rebuild, api_index_status,
+    api_indexing_state, api_inspect_draft, api_inspector, api_language_graph, api_link_targets,
+    api_links, api_list_files, api_list_sessions, api_list_team_templates, api_list_windows,
+    api_metadata_export, api_metadata_import, api_move, api_patch_config, api_patch_server_config,
+    api_patch_workspace, api_post_attachment, api_post_contacts_import, api_preflight,
+    api_preflight_decision, api_promote_draft, api_put_session, api_read_file, api_report_dir,
+    api_report_file, api_report_prefix, api_reports_disable, api_reports_enable, api_reports_state,
+    api_resolve_link, api_restart_terminal, api_save_team_template, api_screensaver_clear_pin,
+    api_screensaver_patch, api_screensaver_set_pin, api_screensaver_state, api_screensaver_verify,
+    api_search_content, api_search_files, api_session_handover_reply, api_set_terminal_broadcast,
+    api_storage_reset, api_survey_reply, api_team_config_read, api_team_config_write,
+    api_terminal_next_name, api_terminal_ws, api_terminals_roster, api_upload_file,
+    api_window_reply, api_workspace_bootstrap, api_write_file, spawn_roster_broadcaster,
+    ws_upgrade,
 };
 #[cfg(feature = "embeddings")]
 use routes::{
@@ -1384,6 +1386,19 @@ fn router(state: Arc<AppState>) -> Router {
         "/api/fonts/source-code-pro/download",
         post(api_fonts_source_code_pro_download),
     );
+    // Team template mutation: save, delete, import all mutate
+    // `~/.chan/team-templates/` so they are gated like other
+    // per-machine config writes.
+    let settings_writes = settings_writes
+        .route("/api/team-templates", post(api_save_team_template))
+        .route(
+            "/api/team-templates/:name",
+            delete(api_delete_team_template),
+        )
+        .route(
+            "/api/team-templates/import",
+            post(api_import_team_template).layer(DefaultBodyLimit::max(1024 * 1024)),
+        );
     let settings_writes = settings_writes.route("/api/metadata/export", post(api_metadata_export));
     let settings_writes = settings_writes.route(
         "/api/metadata/import",
@@ -1423,6 +1438,16 @@ fn router(state: Arc<AppState>) -> Router {
         // default /tmp); see routes/team_config.rs module docs.
         .route("/api/team-config/read", post(api_team_config_read))
         .route("/api/team-config/write", post(api_team_config_write))
+        // Team template read surface: list and per-template reads are
+        // allowed in tunnel/public mode so the dialog can show the
+        // template list even on a shared devserver. Writes are gated
+        // in settings_writes above (they mutate the local machine).
+        .route("/api/team-templates", get(api_list_team_templates))
+        .route("/api/team-templates/:name", get(api_get_team_template))
+        .route(
+            "/api/team-templates/:name/export",
+            get(api_export_team_template),
+        )
         // cs terminal survey reply: completes the parked survey
         // oneshot on the survey bus.
         .route("/api/survey/reply", post(api_survey_reply))

@@ -302,6 +302,29 @@ pub(crate) fn generate_bootstrap_md(
             out.push_str(brief);
             out.push_str("\n\n");
         }
+    } else {
+        let stored = config.brief.trim();
+        if !stored.is_empty() {
+            out.push_str("## Brief\n\n");
+            out.push_str(stored);
+            out.push_str("\n\n");
+        }
+    }
+
+    if !config.skills.is_empty() {
+        out.push_str("## Engineering Standards\n\n");
+        out.push_str(
+            "The following technical standards apply to all members of this team.\n\
+             Read and apply the relevant sections for every task you work on.\n\n",
+        );
+        for skill in &config.skills {
+            out.push_str(&format!("### {}\n\n", skill.name));
+            out.push_str(&skill.content);
+            if !skill.content.ends_with('\n') {
+                out.push('\n');
+            }
+            out.push('\n');
+        }
     }
 
     out.push_str("## How we work\n\n");
@@ -618,6 +641,42 @@ pub(crate) fn identity_prompt(config: &TeamConfig, team_dir: &str, member: &Memb
              wait for {lead_handle} to assign your task.",
         ));
     }
+
+    // Team-wide skills apply to all members; member-specific skills are
+    // additional standards on top of the team-wide set.
+    let team_skills: Vec<&chan_workspace::SkillEntry> = config.skills.iter().collect();
+    let member_extra: Vec<&chan_workspace::SkillEntry> = config
+        .skills
+        .iter()
+        .filter(|s| member.skills.contains(&s.name))
+        .collect();
+
+    if !team_skills.is_empty() {
+        out.push_str("\n\n## Engineering Standards\n\n");
+        out.push_str("Apply these technical standards to every task you work on:\n\n");
+        for skill in &team_skills {
+            out.push_str(&format!("### {}\n\n", skill.name));
+            out.push_str(&skill.content);
+            if !skill.content.ends_with('\n') {
+                out.push('\n');
+            }
+            out.push('\n');
+        }
+    }
+
+    if !member_extra.is_empty() {
+        out.push_str("## Additional Standards for Your Role\n\n");
+        out.push_str("These additional standards apply specifically to your role:\n\n");
+        for skill in &member_extra {
+            out.push_str(&format!("### {}\n\n", skill.name));
+            out.push_str(&skill.content);
+            if !skill.content.ends_with('\n') {
+                out.push('\n');
+            }
+            out.push('\n');
+        }
+    }
+
     out
 }
 
@@ -762,6 +821,8 @@ mod tests {
             auto_prefix_at: true,
             mcp_env: false,
             created_at: "2026-05-29T00:00:00Z".into(),
+            brief: String::new(),
+            skills: vec![],
             members: vec![
                 Member {
                     handle: "@@Lead".into(),
@@ -772,6 +833,7 @@ mod tests {
                     )]),
                     is_lead: true,
                     position: None,
+                    skills: vec![],
                 },
                 Member {
                     handle: "@@Alice".into(),
@@ -779,6 +841,7 @@ mod tests {
                     env: std::collections::BTreeMap::new(),
                     is_lead: false,
                     position: None,
+                    skills: vec![],
                 },
             ],
         }
@@ -929,6 +992,113 @@ mod tests {
     }
 
     #[test]
+    fn bootstrap_includes_engineering_standards_when_skills_present() {
+        let mut config = sample_config();
+        config.skills = vec![
+            chan_workspace::SkillEntry {
+                name: "rustacean".into(),
+                content: "Apply idiomatic Rust.".into(),
+            },
+            chan_workspace::SkillEntry {
+                name: "webdev".into(),
+                content: "Apply idiomatic TypeScript.".into(),
+            },
+        ];
+        let bootstrap = generate_bootstrap_md("teams/alpha", &config, None);
+        assert!(
+            bootstrap.contains("## Engineering Standards"),
+            "standards section present"
+        );
+        assert!(bootstrap.contains("### rustacean"), "rustacean subsection");
+        assert!(
+            bootstrap.contains("Apply idiomatic Rust."),
+            "rustacean content"
+        );
+        assert!(bootstrap.contains("### webdev"), "webdev subsection");
+        assert!(bootstrap.is_ascii(), "still pure ASCII");
+    }
+
+    #[test]
+    fn bootstrap_omits_engineering_standards_when_skills_empty() {
+        let bootstrap = generate_bootstrap_md("teams/alpha", &sample_config(), None);
+        assert!(
+            !bootstrap.contains("## Engineering Standards"),
+            "no standards section without skills"
+        );
+    }
+
+    #[test]
+    fn bootstrap_uses_stored_brief_when_no_brief_arg() {
+        let mut config = sample_config();
+        config.brief = "Stored brief content.".into();
+        let bootstrap = generate_bootstrap_md("teams/alpha", &config, None);
+        assert!(bootstrap.contains("## Brief"), "brief section present");
+        assert!(
+            bootstrap.contains("Stored brief content."),
+            "stored brief body rendered"
+        );
+    }
+
+    #[test]
+    fn brief_arg_takes_precedence_over_stored_brief() {
+        let mut config = sample_config();
+        config.brief = "Stored brief.".into();
+        let bootstrap = generate_bootstrap_md("teams/alpha", &config, Some("Override brief."));
+        assert!(bootstrap.contains("Override brief."), "arg brief wins");
+        assert!(
+            !bootstrap.contains("Stored brief."),
+            "stored brief suppressed by arg"
+        );
+    }
+
+    #[test]
+    fn identity_prompt_includes_team_skills() {
+        let mut config = sample_config();
+        config.skills = vec![chan_workspace::SkillEntry {
+            name: "rustacean".into(),
+            content: "Apply idiomatic Rust.".into(),
+        }];
+        let prompt = identity_prompt(&config, "new-team-1", &config.members[0]);
+        assert!(
+            prompt.contains("## Engineering Standards"),
+            "standards section in identity prompt"
+        );
+        assert!(prompt.contains("Apply idiomatic Rust."), "skill content");
+    }
+
+    #[test]
+    fn identity_prompt_includes_member_extra_skills() {
+        let mut config = sample_config();
+        config.skills = vec![
+            chan_workspace::SkillEntry {
+                name: "rustacean".into(),
+                content: "Apply idiomatic Rust.".into(),
+            },
+            chan_workspace::SkillEntry {
+                name: "architect".into(),
+                content: "Think in systems.".into(),
+            },
+        ];
+        // Lead gets the architect extra skill.
+        config.members[0].skills = vec!["architect".into()];
+        let lead_prompt = identity_prompt(&config, "new-team-1", &config.members[0]);
+        assert!(
+            lead_prompt.contains("## Additional Standards for Your Role"),
+            "extra skills section for lead"
+        );
+        assert!(
+            lead_prompt.contains("Think in systems."),
+            "architect content in lead prompt"
+        );
+        // Worker has no extra skills.
+        let worker_prompt = identity_prompt(&config, "new-team-1", &config.members[1]);
+        assert!(
+            !worker_prompt.contains("## Additional Standards for Your Role"),
+            "no extra skills section for worker"
+        );
+    }
+
+    #[test]
     fn validate_rejects_zero_members() {
         let mut config = sample_config();
         config.members.clear();
@@ -947,6 +1117,7 @@ mod tests {
                 env: std::collections::BTreeMap::new(),
                 is_lead: i == 0,
                 position: None,
+                skills: vec![],
             })
             .collect();
         let err = validate_team_config(&config).unwrap_err();

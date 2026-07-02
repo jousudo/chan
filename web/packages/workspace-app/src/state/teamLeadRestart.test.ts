@@ -60,9 +60,10 @@ function config(): TeamDialogConfig {
     size: 1,
     autoPrefix: true,
     mcpEnv: false,
-    members: [{ name: "Lead", command: "claude --resume", env: "DEBUG=1", isLead: true }],
+    members: [{ name: "Lead", command: "claude --resume", env: "DEBUG=1", isLead: true, skills: [] }],
     realEstate: { kind: "tabs" },
     brief: "",
+    skills: [],
   };
 }
 

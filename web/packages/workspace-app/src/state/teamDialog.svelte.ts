@@ -74,6 +74,9 @@ export interface TeamMemberDraft {
   /// from `command` (loosely) + a `CHAN_AGENT` env override at wire time
   /// (see `agentForMember`).
   isLead: boolean;
+  /// Names of skills from TeamDialogConfig.skills that this member applies
+  /// in addition to the team-wide set. Empty for most members.
+  skills: string[];
 }
 
 /// The pane real-estate strategy for the team's terminals.
@@ -183,6 +186,9 @@ export interface TeamDialogConfig {
   /// no access to the client filesystem, mirroring the CLI's `--brief`. Not
   /// part of the persisted `config.toml`; it travels alongside it.
   brief: string;
+  /// Technical standard profiles that apply to ALL members of this team.
+  /// Content is embedded inline so the config is portable across projects.
+  skills: import("../api/client").SkillEntry[];
 }
 
 /// The dialog request object. App.svelte creates the Team Work Lead
@@ -261,10 +267,11 @@ export function defaultTeamConfig(): TeamDialogConfig {
     autoPrefix: true,
     mcpEnv: false,
     members: [
-      { name: "Lead", command: "claude", env: "", isLead: true },
+      { name: "Lead", command: "claude", env: "", isLead: true, skills: [] },
     ],
     realEstate: { kind: "tabs" },
     brief: "",
+    skills: [],
   };
 }
 
@@ -381,6 +388,7 @@ export function resizeTeamMembers(cfg: TeamDialogConfig): TeamDialogConfig {
       command: "claude",
       env: "",
       isLead: false,
+      skills: [],
     });
   }
   while (out.members.length > out.size) {

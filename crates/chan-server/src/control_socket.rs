@@ -4350,6 +4350,8 @@ is_lead = false
             auto_prefix_at: false,
             mcp_env,
             created_at: "2026-06-03T00:00:00Z".into(),
+            brief: String::new(),
+            skills: vec![],
             members: vec![chan_workspace::Member {
                 handle: "@@Probe".into(),
                 // `${VAR:+set}` expands to "set" when CHAN_MCP_SERVER_JSON is
@@ -4359,6 +4361,7 @@ is_lead = false
                 env: Default::default(),
                 is_lead: true,
                 position: None,
+                skills: vec![],
             }],
         }
     }

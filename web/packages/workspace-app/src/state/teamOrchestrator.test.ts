@@ -49,19 +49,19 @@ describe("parseEnvLines", () => {
 describe("memberHandle", () => {
   test("auto-prefixes with @@ when autoPrefix is on", () => {
     expect(
-      memberHandle({ name: "Lead", command: "claude", env: "", isLead: true }, true),
+      memberHandle({ name: "Lead", command: "claude", env: "", isLead: true, skills: [] }, true),
     ).toBe("@@Lead");
   });
 
   test("returns raw name when autoPrefix is off", () => {
     expect(
-      memberHandle({ name: "Lead", command: "claude", env: "", isLead: true }, false),
+      memberHandle({ name: "Lead", command: "claude", env: "", isLead: true, skills: [] }, false),
     ).toBe("Lead");
   });
 
   test("skips double-prefix when name already starts with @@", () => {
     expect(
-      memberHandle({ name: "@@Lead", command: "claude", env: "", isLead: true }, true),
+      memberHandle({ name: "@@Lead", command: "claude", env: "", isLead: true, skills: [] }, true),
     ).toBe("@@Lead");
   });
 });
@@ -89,11 +89,12 @@ describe("translateConfig", () => {
       autoPrefix: true,
       mcpEnv: false,
       members: [
-        { name: "Lead", command: "claude", env: "", isLead: true },
-        { name: "Worker1", command: "claude", env: "", isLead: false },
+        { name: "Lead", command: "claude", env: "", isLead: true, skills: [] },
+        { name: "Worker1", command: "claude", env: "", isLead: false, skills: [] },
       ],
       realEstate: { kind: "tabs" },
       brief: "",
+      skills: [],
       ...overrides,
     };
   }
@@ -133,8 +134,8 @@ describe("translateConfig", () => {
     const out = translateConfig(
       sample({
         members: [
-          { name: "Lead", command: "claude", env: "CHAN_TAB_NAME=Custom", isLead: true },
-          { name: "Worker1", command: "claude", env: "", isLead: false },
+          { name: "Lead", command: "claude", env: "CHAN_TAB_NAME=Custom", isLead: true, skills: [] },
+          { name: "Worker1", command: "claude", env: "", isLead: false, skills: [] },
         ],
       }),
     );
@@ -169,8 +170,8 @@ describe("translateConfig", () => {
     const out = translateConfig(
       sample({
         members: [
-          { name: "Lead", command: "claude --resume", env: "", isLead: true },
-          { name: "Worker1", command: "bash", env: "CHAN_AGENT=codex", isLead: false },
+          { name: "Lead", command: "claude --resume", env: "", isLead: true, skills: [] },
+          { name: "Worker1", command: "bash", env: "CHAN_AGENT=codex", isLead: false, skills: [] },
         ],
       }),
     );
@@ -219,8 +220,8 @@ describe("wireToDialog", () => {
     expect(dialog.members).toEqual([
       // The draft carries no `agent`; it is derived from the command at wire
       // time, not stored on the member.
-      { name: "@@Lead", command: "claude", env: "FOO=bar", isLead: true },
-      { name: "@@Worker1", command: "claude", env: "", isLead: false },
+      { name: "@@Lead", command: "claude", env: "FOO=bar", isLead: true, skills: [] },
+      { name: "@@Worker1", command: "claude", env: "", isLead: false, skills: [] },
     ]);
   });
 
@@ -295,9 +296,9 @@ describe("translateConfig <-> wireToDialog round-trips real estate", () => {
       autoPrefix: true,
       mcpEnv: false,
       members: [
-        { name: "Lead", command: "claude", env: "", isLead: true },
-        { name: "Worker1", command: "claude", env: "", isLead: false },
-        { name: "Worker2", command: "claude", env: "", isLead: false },
+        { name: "Lead", command: "claude", env: "", isLead: true, skills: [] },
+        { name: "Worker1", command: "claude", env: "", isLead: false, skills: [] },
+        { name: "Worker2", command: "claude", env: "", isLead: false, skills: [] },
       ],
       realEstate: {
         kind: "split",
@@ -305,6 +306,7 @@ describe("translateConfig <-> wireToDialog round-trips real estate", () => {
         slots: [[0], [1], [2], []],
       },
       brief: "",
+      skills: [],
     };
     const wireOut = translateConfig(original);
     const back = wireToDialog(wireOut, "round");
@@ -329,12 +331,13 @@ describe("translateConfig <-> wireToDialog round-trips real estate", () => {
       autoPrefix: true,
       mcpEnv: false,
       members: [
-        { name: "Lead", command: "claude", env: "", isLead: true },
-        { name: "Worker1", command: "gemini", env: "", isLead: false },
-        { name: "Worker2", command: "bash", env: "", isLead: false },
+        { name: "Lead", command: "claude", env: "", isLead: true, skills: [] },
+        { name: "Worker1", command: "gemini", env: "", isLead: false, skills: [] },
+        { name: "Worker2", command: "bash", env: "", isLead: false, skills: [] },
       ],
       realEstate: { kind: "tabs" },
       brief: "",
+      skills: [],
     };
     // The agent is not stored anywhere: it is derived from the command at use
     // time (server-side, and SPA-side for the lead poke). The command round-

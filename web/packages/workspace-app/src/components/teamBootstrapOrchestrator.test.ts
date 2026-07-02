@@ -77,12 +77,13 @@ function tabsConfig(): TeamDialogConfig {
     autoPrefix: true,
     mcpEnv: false,
     members: [
-      { name: "Lead", command: "claude", env: "", isLead: true },
-      { name: "Worker1", command: "claude --resume", env: "", isLead: false },
-      { name: "Worker2", command: "codex", env: "", isLead: false },
+      { name: "Lead", command: "claude", env: "", isLead: true, skills: [] },
+      { name: "Worker1", command: "claude --resume", env: "", isLead: false, skills: [] },
+      { name: "Worker2", command: "codex", env: "", isLead: false, skills: [] },
     ],
     realEstate: { kind: "tabs" },
     brief: "",
+    skills: [],
   };
 }
 

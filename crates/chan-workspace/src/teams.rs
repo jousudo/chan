@@ -6,6 +6,18 @@
 
 use serde::{Deserialize, Serialize};
 
+/// A named skill embedded in a team config. The `content` field carries the
+/// full Markdown text of the skill profile so the config is self-contained
+/// and portable across projects (no dependency on `.agents/skills/` files in
+/// the destination workspace).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SkillEntry {
+    /// Short identifier, e.g. "rustacean", "webdev".
+    pub name: String,
+    /// Full Markdown content of the skill profile.
+    pub content: String,
+}
+
 /// Per-team config persisted to `config.toml`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct TeamConfig {
@@ -39,6 +51,16 @@ pub struct TeamConfig {
     pub created_at: String,
     #[serde(default)]
     pub members: Vec<Member>,
+    // Team-wide process description (workflow, approval flow, communication
+    // hierarchy). Folded into bootstrap.md as its own section. An absent
+    // field in a hand-written or pre-feature config.toml reads as empty.
+    #[serde(default)]
+    pub brief: String,
+    // Technical standard profiles that apply to ALL members of this team.
+    // Each entry embeds the skill content inline so the config is portable
+    // (no `.agents/skills/` dependency in the destination workspace).
+    #[serde(default)]
+    pub skills: Vec<SkillEntry>,
 }
 
 fn default_auto_prefix_at() -> bool {
@@ -59,6 +81,11 @@ pub struct Member {
     pub is_lead: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub position: Option<Position>,
+    // Names of skills from `TeamConfig.skills` that this member applies in
+    // addition to the team-wide set. An empty list means the member uses
+    // only the team-wide skills (the common case).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub skills: Vec<String>,
 }
 
 /// Airplane-style grid coordinate. Row + column are zero-based.

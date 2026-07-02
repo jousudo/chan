@@ -1275,6 +1275,44 @@ export const api = {
       brief_content: briefContent,
     }),
 
+  /// Team template API: globally stored TeamConfig TOML files under
+  /// `~/.chan/team-templates/`. Templates are workspace-independent so the
+  /// same template can be applied to any project or shared as a company
+  /// standard. The file format is the same TeamConfig schema, making
+  /// export/import byte-identical round-trips that are hand-editable.
+  /// Read routes (list, get, export) are open in tunnel/public mode;
+  /// mutation routes (save, delete, import) are settings-gated.
+  listTeamTemplates: () =>
+    req<TeamTemplateInfo[]>("GET", "/api/team-templates"),
+  saveTeamTemplate: (name: string, config: TeamConfigWire) =>
+    req<void>("POST", "/api/team-templates", { name, config }),
+  getTeamTemplate: (name: string) =>
+    req<TeamConfigWire>("GET", `/api/team-templates/${encodeURIComponent(name)}`),
+  deleteTeamTemplate: (name: string) =>
+    req<void>("DELETE", `/api/team-templates/${encodeURIComponent(name)}`),
+  /// Returns a token-bearing URL for direct `<a href>` download.
+  teamTemplateExportUrl: (name: string) =>
+    withTokenQuery(
+      apiPath(`/api/team-templates/${encodeURIComponent(name)}/export`),
+    ),
+  /// Upload a TOML file as a new template. `name` overrides the slug
+  /// derived from `team_name` when provided. Returns `{name}` of the
+  /// saved template.
+  importTeamTemplate: async (file: File, name?: string): Promise<{ name: string }> => {
+    const form = new FormData();
+    form.append("file", file);
+    if (name?.trim()) form.append("name", name.trim());
+    const res = await chanFetch(apiPath("/api/team-templates/import"), {
+      method: "POST",
+      headers: directAuthHeaders(),
+      body: form,
+    });
+    if (!res.ok) {
+      await responseTextError(res);
+    }
+    return (await res.json()) as { name: string };
+  },
+
   /// Reply to a survey raised by `cs terminal survey`. The blocked CLI is
   /// awaiting on the server's survey bus keyed by `surveyId`; this POST
   /// completes that oneshot so the CLI prints the result and exits. The
@@ -1330,6 +1368,25 @@ export interface TeamMemberWire {
   // it from `command` (+ a CHAN_AGENT env override) via SubmitAgent::derive.
   // The SPA mirror is agentForMember (teamDialog.svelte.ts), used only to
   // pick the lead identity poke's chord at bootstrap.
+  /// Names of skills from TeamConfigWire.skills that this member applies
+  /// in addition to the team-wide set. Omitted (empty) for most members.
+  skills?: string[];
+}
+
+/// A named technical standard embedded in a team config. Mirrors
+/// `chan_workspace::teams::SkillEntry`. Content is embedded inline so the
+/// config is portable across projects (no .agents/skills/ dependency).
+export interface SkillEntry {
+  name: string;
+  content: string;
+}
+
+/// Summary returned by `GET /api/team-templates`. Mirrors
+/// `chan_server::routes::team_templates::TemplateInfo`.
+export interface TeamTemplateInfo {
+  name: string;
+  team_name: string;
+  member_count: number;
 }
 
 export interface TeamConfigWire {
@@ -1348,6 +1405,12 @@ export interface TeamConfigWire {
   mcp_env: boolean;
   created_at: string;
   members: TeamMemberWire[];
+  /// Team process description (workflow, approval flow, communication
+  /// hierarchy). Folded into bootstrap.md as its own section.
+  brief?: string;
+  /// Technical standard profiles that apply to all team members.
+  /// Content is embedded inline for portability across projects.
+  skills?: SkillEntry[];
 }
 
 /// A survey pushed from the server to the SPA in an `open_survey` window
