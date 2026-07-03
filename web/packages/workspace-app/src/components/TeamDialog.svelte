@@ -334,17 +334,32 @@
     }
   }
 
+  function slugFrom(name: string): string {
+    const s = name
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9_]/g, "-")
+      .replace(/-+/g, "-")
+      .replace(/^-|-$/g, "");
+    return s || "team";
+  }
+
   async function applyTemplate(name: string): Promise<void> {
     templatesBusy = true;
     templateSaveError = null;
     try {
       const wire = await api.getTeamTemplate(name);
-      // Keep the current team directory; the template does not carry a
-      // meaningful workspace path, so the user's existing dir stays.
-      const loaded = wireToDialog(wire, config.teamDir || TEAM_DIR_DEFAULT);
-      config = resizeTeamMembers({ ...loaded, configMode: "new" });
+      // When loading into an existing team keep its dir; for a fresh "new"
+      // dialog derive the dir from the template's team_name so the old
+      // default "new-team-1" placeholder is not left behind.
+      const teamDir =
+        config.configMode === "load"
+          ? config.teamDir
+          : slugFrom(wire.team_name) || TEAM_DIR_DEFAULT;
+      const loaded = wireToDialog(wire, teamDir);
+      config = resizeTeamMembers({ ...loaded, configMode: config.configMode });
       loadError = null;
-      loadedConfig = null;
+      loadedConfig = config.configMode === "load" ? loadedConfig : null;
     } catch (err) {
       templateSaveError = `load failed: ${(err as Error).message}`;
     } finally {

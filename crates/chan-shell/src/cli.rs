@@ -715,13 +715,19 @@ pub enum TeamAction {
         /// Workspace-relative team directory (the team lives at
         /// `{dir}/config.toml`).
         dir: String,
-        /// Path to the team config.toml to write. Omit with `--stdin`.
-        #[arg(long)]
+        /// Path to the team config.toml to write. Omit with `--stdin` or
+        /// `--template`.
+        #[arg(long, conflicts_with_all = ["stdin", "template"])]
         config: Option<PathBuf>,
         /// Read the team config.toml from this process's stdin instead of
-        /// `--config`.
-        #[arg(long)]
+        /// `--config` or `--template`.
+        #[arg(long, conflicts_with_all = ["config", "template"])]
         stdin: bool,
+        /// Load config from a saved template name stored in
+        /// `~/.chan/team-templates/<name>.toml`. Conflicts with `--config`
+        /// and `--stdin`.
+        #[arg(long, value_name = "NAME", conflicts_with_all = ["config", "stdin"])]
+        template: Option<String>,
         /// Path to a brief Markdown file folded VERBATIM into the generated
         /// `bootstrap.md` (its own section after the Roster), so a round's
         /// custom operating instructions survive a normal `new`/regenerate.
@@ -1569,11 +1575,16 @@ async fn cmd_shell_team(action: TeamAction) -> Result<()> {
             dir,
             config,
             stdin,
+            template,
             brief,
             mcp_env,
             script,
         } => {
-            let mut config_toml = read_team_config_input(config, stdin)?;
+            let mut config_toml = if let Some(ref name) = template {
+                read_team_template_input(name)?
+            } else {
+                read_team_config_input(config, stdin)?
+            };
             // --mcp-env overrides the input config's `mcp_env` (or adds it).
             // Omitted -> leave the config as-is (server's serde default is OFF).
             if let Some(toggle) = mcp_env {
@@ -1632,6 +1643,30 @@ fn read_brief_input(brief: Option<PathBuf>) -> Result<Option<String>> {
             Ok(Some(text))
         }
     }
+}
+
+/// Read a saved template by name from `~/.chan/team-templates/<name>.toml`
+/// and return its TOML text for `cs terminal team new --template <name>`.
+fn read_team_template_input(name: &str) -> Result<String> {
+    let safe: String = name
+        .trim()
+        .to_ascii_lowercase()
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '-' })
+        .collect();
+    if safe.is_empty() || safe.starts_with('-') || safe.contains("..") {
+        anyhow::bail!("invalid template name: {name:?}");
+    }
+    // Mirror chan_workspace::paths::config_dir(): $CHAN_HOME or ~/.chan.
+    let chan_home = std::env::var("CHAN_HOME").ok().map(PathBuf::from).unwrap_or_else(|| {
+        std::env::var("HOME")
+            .ok()
+            .map(|h| PathBuf::from(h).join(".chan"))
+            .unwrap_or_else(|| PathBuf::from(".chan"))
+    });
+    let path = chan_home.join("team-templates").join(format!("{safe}.toml"));
+    std::fs::read_to_string(&path)
+        .with_context(|| format!("template '{name}' not found at {}", path.display()))
 }
 
 /// Resolve the `cs terminal team new` config.toml input from `--config

@@ -270,7 +270,8 @@ export function defaultTeamConfig(): TeamDialogConfig {
       { name: "Lead", command: "claude", env: "", isLead: true, skills: [] },
     ],
     realEstate: { kind: "tabs" },
-    brief: "",
+    brief:
+      "All task requests flow through the lead. Members complete their assigned scope and report back via the followup system. Host input is requested only through the lead.",
     skills: [],
   };
 }
