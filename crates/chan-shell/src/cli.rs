@@ -1658,10 +1658,14 @@ fn read_team_template_input(name: &str) -> Result<String> {
         anyhow::bail!("invalid template name: {name:?}");
     }
     // Mirror chan_workspace::paths::config_dir(): $CHAN_HOME or ~/.chan.
+    // Windows home is USERPROFILE; Unix is HOME.
     let chan_home = std::env::var("CHAN_HOME").ok().map(PathBuf::from).unwrap_or_else(|| {
-        std::env::var("HOME")
-            .ok()
-            .map(|h| PathBuf::from(h).join(".chan"))
+        let home = if cfg!(windows) {
+            std::env::var("USERPROFILE").ok()
+        } else {
+            std::env::var("HOME").ok()
+        };
+        home.map(|h| PathBuf::from(h).join(".chan"))
             .unwrap_or_else(|| PathBuf::from(".chan"))
     });
     let path = chan_home.join("team-templates").join(format!("{safe}.toml"));
