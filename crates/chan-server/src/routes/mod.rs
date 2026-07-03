@@ -93,7 +93,7 @@ pub use session_handover::api_session_handover_reply;
 pub use sessions::{api_delete_session, api_get_session, api_list_sessions, api_put_session};
 pub use storage::api_storage_reset;
 pub use survey::api_survey_reply;
-pub use team_config::{api_team_config_read, api_team_config_write};
+pub use team_config::{api_get_workspace_skills, api_team_config_read, api_team_config_write};
 pub use team_templates::{
     api_delete_team_template, api_export_team_template, api_get_team_template,
     api_import_team_template, api_list_team_templates, api_save_team_template,

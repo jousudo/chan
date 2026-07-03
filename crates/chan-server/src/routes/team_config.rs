@@ -31,7 +31,7 @@ use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::Json;
-use chan_workspace::{Member, TeamConfig};
+use chan_workspace::{Member, SkillEntry, TeamConfig};
 use serde::Deserialize;
 
 use crate::error::err;
@@ -205,6 +205,78 @@ pub(crate) fn read_team_config(
     Ok(config)
 }
 
+/// Convert a skill name to a safe directory slug for `.agents/skills/<slug>/`.
+fn skill_slug(name: &str) -> String {
+    let s: String = name
+        .trim()
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '_' {
+                c.to_ascii_lowercase()
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    let mut s = s;
+    while s.contains("--") {
+        s = s.replace("--", "-");
+    }
+    let s = s.trim_matches('-').to_string();
+    let s = if s.is_empty() { "skill".to_string() } else { s };
+    s[..s.len().min(64)].to_string()
+}
+
+/// Read `.agents/skills/*/SKILL.md` from the workspace root.
+/// Returns a sorted list of SkillEntry; entries whose SKILL.md cannot
+/// be read are silently skipped (best-effort).
+pub(crate) fn read_workspace_skills(workspace: &chan_workspace::Workspace) -> Vec<SkillEntry> {
+    let skills_dir = workspace.root().join(".agents").join("skills");
+    if !skills_dir.is_dir() {
+        return vec![];
+    }
+    let rd = match std::fs::read_dir(&skills_dir) {
+        Ok(rd) => rd,
+        Err(_) => return vec![],
+    };
+    let mut out = Vec::new();
+    for entry in rd.flatten() {
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        let skill_file = path.join("SKILL.md");
+        if !skill_file.is_file() {
+            continue;
+        }
+        let Ok(content) = std::fs::read_to_string(&skill_file) else {
+            continue;
+        };
+        let name = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("skill")
+            .to_string();
+        out.push(SkillEntry { name, content });
+    }
+    out.sort_by(|a, b| a.name.cmp(&b.name));
+    out
+}
+
+/// `GET /api/workspace/skills` - list skill files found in `.agents/skills/`
+/// of the current workspace. Used by the team dialog to offer an
+/// "Import from workspace" shortcut that adds existing skill profiles to
+/// the team's embedded standards pool without requiring manual copy-paste.
+pub async fn api_get_workspace_skills(State(state): State<Arc<AppState>>) -> Response {
+    let workspace = state.workspace();
+    let result =
+        tokio::task::spawn_blocking(move || read_workspace_skills(&workspace)).await;
+    match result {
+        Ok(skills) => Json(skills).into_response(),
+        Err(join) => crate::error::err(StatusCode::INTERNAL_SERVER_ERROR, join.to_string()),
+    }
+}
+
 pub(crate) fn write_team_config(
     workspace: &chan_workspace::Workspace,
     dir: &str,
@@ -239,6 +311,24 @@ pub(crate) fn write_team_config(
     workspace
         .write_text(&bootstrap_rel, &bootstrap)
         .map_err(|e| format!("cannot write {bootstrap_rel}: {e}"))?;
+
+    // Write embedded skills to .agents/skills/<slug>/SKILL.md so that
+    // importing a template into an empty project materializes the skill
+    // profiles on disk. Existing files are not overwritten to preserve
+    // any project-specific customizations.
+    for skill in &config.skills {
+        if skill.name.is_empty() || skill.content.is_empty() {
+            continue;
+        }
+        let slug = skill_slug(&skill.name);
+        let skill_dir = format!(".agents/skills/{slug}");
+        if workspace.create_dir(&skill_dir).is_ok() {
+            let skill_path = format!("{skill_dir}/SKILL.md");
+            if workspace.read_text(&skill_path).is_err() {
+                let _ = workspace.write_text(&skill_path, &skill.content);
+            }
+        }
+    }
 
     Ok(())
 }

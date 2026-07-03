@@ -1313,6 +1313,11 @@ export const api = {
     return (await res.json()) as { name: string };
   },
 
+  /// Read `.agents/skills/*/SKILL.md` from the current workspace. Used by
+  /// the team dialog's "Import from workspace" shortcut to seed the embedded
+  /// skills pool without manual copy-paste.
+  getWorkspaceSkills: () => req<SkillEntry[]>("GET", "/api/workspace/skills"),
+
   /// Reply to a survey raised by `cs terminal survey`. The blocked CLI is
   /// awaiting on the server's survey bus keyed by `surveyId`; this POST
   /// completes that oneshot so the CLI prints the result and exits. The

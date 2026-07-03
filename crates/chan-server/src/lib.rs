@@ -109,7 +109,8 @@ use routes::{
     api_resolve_link, api_restart_terminal, api_save_team_template, api_screensaver_clear_pin,
     api_screensaver_patch, api_screensaver_set_pin, api_screensaver_state, api_screensaver_verify,
     api_search_content, api_search_files, api_session_handover_reply, api_set_terminal_broadcast,
-    api_storage_reset, api_survey_reply, api_team_config_read, api_team_config_write,
+    api_get_workspace_skills, api_storage_reset, api_survey_reply, api_team_config_read,
+    api_team_config_write,
     api_terminal_next_name, api_terminal_ws, api_terminals_roster, api_upload_file,
     api_window_reply, api_workspace_bootstrap, api_write_file, spawn_roster_broadcaster,
     ws_upgrade,
@@ -1438,6 +1439,7 @@ fn router(state: Arc<AppState>) -> Router {
         // default /tmp); see routes/team_config.rs module docs.
         .route("/api/team-config/read", post(api_team_config_read))
         .route("/api/team-config/write", post(api_team_config_write))
+        .route("/api/workspace/skills", get(api_get_workspace_skills))
         // Team template read surface: list and per-template reads are
         // allowed in tunnel/public mode so the dialog can show the
         // template list even on a shared devserver. Writes are gated

@@ -416,6 +416,8 @@
   let skillAddOpen = $state(false);
   let skillEditIdx = $state<number | null>(null);
   let skillEditContent = $state("");
+  let wsSkillsLoading = $state(false);
+  let wsSkillsError = $state("");
 
   function addSkill(): void {
     const name = skillAddName.trim();
@@ -424,6 +426,25 @@
     skillAddName = "";
     skillAddContent = "";
     skillAddOpen = false;
+  }
+
+  async function importFromWorkspace(): Promise<void> {
+    wsSkillsLoading = true;
+    wsSkillsError = "";
+    try {
+      const found = await api.getWorkspaceSkills();
+      const existing = new Set(config.skills.map((s) => s.name));
+      const fresh = found.filter((s) => !existing.has(s.name));
+      if (fresh.length === 0) {
+        wsSkillsError = "No new skills found in .agents/skills/.";
+      } else {
+        config = { ...config, skills: [...config.skills, ...fresh] };
+      }
+    } catch {
+      wsSkillsError = "Could not read workspace skills.";
+    } finally {
+      wsSkillsLoading = false;
+    }
   }
 
   function removeSkill(idx: number): void {
@@ -827,11 +848,22 @@
                 </div>
               </div>
             {:else}
-              <button
-                type="button"
-                class="team-skill-btn"
-                onclick={() => { skillAddOpen = true; }}
-              >+ Add skill</button>
+              <div class="team-skill-actions">
+                <button
+                  type="button"
+                  class="team-skill-btn"
+                  onclick={() => { skillAddOpen = true; }}
+                >+ Add skill</button>
+                <button
+                  type="button"
+                  class="team-skill-btn team-skill-btn--import"
+                  disabled={wsSkillsLoading}
+                  onclick={importFromWorkspace}
+                >{wsSkillsLoading ? "Loading..." : "Import from workspace"}</button>
+              </div>
+              {#if wsSkillsError}
+                <p class="team-skill-ws-error">{wsSkillsError}</p>
+              {/if}
             {/if}
           </div>
         {/if}
@@ -1660,6 +1692,20 @@
   .team-skill-danger {
     color: var(--danger-text, #c0392b);
     border-color: var(--danger-text, #c0392b);
+  }
+  .team-skill-actions {
+    display: flex;
+    gap: 6px;
+    flex-wrap: wrap;
+  }
+  .team-skill-btn--import {
+    color: var(--accent, #2980b9);
+    border-color: var(--accent, #2980b9);
+  }
+  .team-skill-ws-error {
+    margin: 4px 0 0;
+    font-size: 0.78rem;
+    color: var(--danger-text, #c0392b);
   }
 
   /* Per-member additional skills (shown when team has skills defined) */
