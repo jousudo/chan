@@ -1652,23 +1652,34 @@ fn read_team_template_input(name: &str) -> Result<String> {
         .trim()
         .to_ascii_lowercase()
         .chars()
-        .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '-' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '-'
+            }
+        })
         .collect();
     if safe.is_empty() || safe.starts_with('-') || safe.contains("..") {
         anyhow::bail!("invalid template name: {name:?}");
     }
     // Mirror chan_workspace::paths::config_dir(): $CHAN_HOME or ~/.chan.
     // Windows home is USERPROFILE; Unix is HOME.
-    let chan_home = std::env::var("CHAN_HOME").ok().map(PathBuf::from).unwrap_or_else(|| {
-        let home = if cfg!(windows) {
-            std::env::var("USERPROFILE").ok()
-        } else {
-            std::env::var("HOME").ok()
-        };
-        home.map(|h| PathBuf::from(h).join(".chan"))
-            .unwrap_or_else(|| PathBuf::from(".chan"))
-    });
-    let path = chan_home.join("team-templates").join(format!("{safe}.toml"));
+    let chan_home = std::env::var("CHAN_HOME")
+        .ok()
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            let home = if cfg!(windows) {
+                std::env::var("USERPROFILE").ok()
+            } else {
+                std::env::var("HOME").ok()
+            };
+            home.map(|h| PathBuf::from(h).join(".chan"))
+                .unwrap_or_else(|| PathBuf::from(".chan"))
+        });
+    let path = chan_home
+        .join("team-templates")
+        .join(format!("{safe}.toml"));
     std::fs::read_to_string(&path)
         .with_context(|| format!("template '{name}' not found at {}", path.display()))
 }

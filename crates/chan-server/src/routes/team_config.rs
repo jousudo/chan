@@ -269,8 +269,7 @@ pub(crate) fn read_workspace_skills(workspace: &chan_workspace::Workspace) -> Ve
 /// the team's embedded standards pool without requiring manual copy-paste.
 pub async fn api_get_workspace_skills(State(state): State<Arc<AppState>>) -> Response {
     let workspace = state.workspace();
-    let result =
-        tokio::task::spawn_blocking(move || read_workspace_skills(&workspace)).await;
+    let result = tokio::task::spawn_blocking(move || read_workspace_skills(&workspace)).await;
     match result {
         Ok(skills) => Json(skills).into_response(),
         Err(join) => crate::error::err(StatusCode::INTERNAL_SERVER_ERROR, join.to_string()),
