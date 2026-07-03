@@ -2531,6 +2531,7 @@ mod tests {
                                 brief,
                                 mcp_env,
                                 script,
+                                template: _,
                             },
                     },
             } => {
