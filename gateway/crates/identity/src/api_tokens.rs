@@ -281,6 +281,23 @@ impl ApiTokenService {
             .map_err(map_db)
     }
 
+    /// Soft-revoke every live token of the user in one statement; the
+    /// count returned covers rows this call flipped. No per-token
+    /// audit rows: the caller's auth_audit entry is the canonical
+    /// event for a bulk revocation (same posture as profile's admin
+    /// block), and idempotent retries must not duplicate it.
+    pub async fn revoke_all_for_user(&self, user_id: Uuid) -> Result<u64> {
+        let res = sqlx::query(
+            "UPDATE api_tokens SET revoked_at = now() \
+             WHERE user_id = $1 AND revoked_at IS NULL",
+        )
+        .bind(user_id)
+        .execute(&self.pool)
+        .await
+        .map_err(map_db)?;
+        Ok(res.rows_affected())
+    }
+
     pub async fn audit(
         &self,
         user_id: Uuid,

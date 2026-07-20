@@ -161,6 +161,7 @@ impl TestApp {
         let router = http::router(
             cfg,
             store,
+            pool.clone(),
             api_tokens,
             identity::token_throttle::TokenThrottle::new(),
         );

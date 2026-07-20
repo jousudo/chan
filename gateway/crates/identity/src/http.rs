@@ -11,6 +11,7 @@ use gateway_common::validators::{valid_username, MAX_USERNAME_EDITS};
 use oauth2::PkceCodeVerifier;
 use rustrict::CensorStr;
 use serde::{Deserialize, Serialize};
+use sqlx::PgPool;
 use subtle::ConstantTimeEq;
 use tower_http::trace::TraceLayer;
 use tower_sessions::{
@@ -26,7 +27,9 @@ use crate::api_tokens::{
 };
 use crate::config::Config;
 use crate::error::{Error, Result};
-use crate::profile_client::{DevserverGrant, IncomingShare, OwnedDevserverSummary, User};
+use crate::profile_client::{
+    DevserverGrant, IncomingShare, OwnedDevserverSummary, ProfileError, User,
+};
 use crate::static_files;
 use crate::token_throttle::TokenThrottle;
 
@@ -70,6 +73,9 @@ pub struct AppState {
     /// /internal/v1/sessions/whoami can load a record by id; the axum
     /// Session extractor only ever resolves the caller's own cookie.
     pub store: PostgresStore,
+    /// Raw pool for the admin session sweep's id listing; the store's
+    /// public API loads and deletes by id but cannot enumerate.
+    pub pool: PgPool,
     pub api_tokens: ApiTokenService,
     /// Per-token-fingerprint rate limiter applied to
     /// /internal/v1/tokens/validate. Defense in depth: devserver-proxy
@@ -138,10 +144,11 @@ struct PendingOauth {
 pub fn router(
     cfg: Arc<Config>,
     store: PostgresStore,
+    pool: PgPool,
     api_tokens: ApiTokenService,
     token_throttle: TokenThrottle,
 ) -> Router {
-    let (public, internal) = routers(cfg, store, api_tokens, token_throttle);
+    let (public, internal) = routers(cfg, store, pool, api_tokens, token_throttle);
     public.merge(internal)
 }
 
@@ -151,6 +158,7 @@ pub fn router(
 pub fn routers(
     cfg: Arc<Config>,
     store: PostgresStore,
+    pool: PgPool,
     api_tokens: ApiTokenService,
     token_throttle: TokenThrottle,
 ) -> (Router, Router) {
@@ -170,6 +178,7 @@ pub fn routers(
     let state = AppState {
         cfg,
         store,
+        pool,
         api_tokens,
         token_throttle,
         desktop_redemptions: Default::default(),
@@ -194,12 +203,22 @@ pub fn routers(
         .route("/internal/v1/sessions/whoami", post(session_whoami))
         .route_layer(middleware::from_fn_with_state(state.clone(), internal_auth));
 
-    // /admin/v1/* is the operator surface for chan-gateway-admin,
-    // gated by IDENTITY_ADMIN_TOKEN (empty = the routes answer 404 as
-    // if absent; see admin_auth). Same sub-router shape as /internal
-    // for the same session-layer reason.
+    // /admin/v1/* is the privileged surface gated by
+    // IDENTITY_ADMIN_TOKEN (empty = the routes answer 404 as if
+    // absent; see admin_auth): operator token mints for
+    // chan-gateway-admin, and the user-wide access-revoke / delete
+    // contract for the tier account service. Same sub-router shape
+    // as /internal for the same session-layer reason.
     let admin = Router::new()
         .route("/admin/v1/tokens", post(admin_tokens_create))
+        .route(
+            "/admin/v1/users/{user_id}/access/revoke",
+            post(admin_revoke_user_access),
+        )
+        .route(
+            "/admin/v1/users/{user_id}",
+            axum::routing::delete(admin_delete_user),
+        )
         .route_layer(middleware::from_fn_with_state(state.clone(), admin_auth));
 
     let internal = internal
@@ -2024,6 +2043,161 @@ async fn admin_tokens_create(
             secret,
         }),
     ))
+}
+
+#[derive(Serialize)]
+struct AdminRevokeAccessResponse {
+    user_id: Uuid,
+    /// Null when the user row is already gone; see the handler for
+    /// why the goal state still holds in that case.
+    username: Option<String>,
+    pats_revoked: u64,
+    tunnels_evicted: u64,
+}
+
+/// `POST /admin/v1/users/{user_id}/access/revoke` -- user-wide access
+/// revocation for the tier account service (account deletion and
+/// entitlement-loss deprovisioning): soft-revoke every live PAT, then
+/// evict every live tunnel. Idempotent: a retry after a partial
+/// failure finds the PATs already revoked and re-attempts only the
+/// eviction. Any step failure answers 502 so the caller retries; 200
+/// means both steps are durably done.
+async fn admin_revoke_user_access(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(user_id): Path<Uuid>,
+) -> Result<Json<AdminRevokeAccessResponse>> {
+    // Resolve the user before anything mutates: the response carries
+    // the username, and a missing user means a completed delete
+    // already cascaded the tokens away, so access is revoked by
+    // construction and the call converges to a zeroed success.
+    let user = state.cfg.profile_client.get_user(user_id).await?;
+    let pats_revoked = state.api_tokens.revoke_all_for_user(user_id).await?;
+    if pats_revoked > 0 {
+        // One canonical auth_audit entry for the bulk revoke;
+        // per-token rows would duplicate it N times (same posture as
+        // profile's admin block). Best-effort: revoked_at is the
+        // durable record, the audit row is attribution. Written before
+        // the eviction attempt so a failed eviction (502, retried)
+        // still leaves exactly one entry: the retry flips no token,
+        // so it writes nothing.
+        let ip = client_ip(&headers);
+        let ua = user_agent(&headers);
+        if let Err(e) = state
+            .cfg
+            .profile_client
+            .write_auth_audit(
+                user_id,
+                "access_revoked",
+                ip.as_deref(),
+                ua.as_deref(),
+                Some("identity admin contract"),
+            )
+            .await
+        {
+            tracing::warn!(error = ?e, user_id = %user_id, "write_auth_audit (access_revoked) failed");
+        }
+    }
+    let mut tunnels_evicted = 0_u64;
+    if user.is_some() {
+        // No silent skip: an eviction failure (unreachable or refusing
+        // devserver-control admin) maps to 502 through Error::Upstream,
+        // so the caller stalls loudly and retries until it succeeds.
+        tunnels_evicted = state
+            .cfg
+            .workspace_admin
+            .kill_owner_tunnels(user_id)
+            .await? as u64;
+    }
+    Ok(Json(AdminRevokeAccessResponse {
+        user_id,
+        username: user.map(|u| u.username),
+        pats_revoked,
+        tunnels_evicted,
+    }))
+}
+
+#[derive(Serialize)]
+struct AdminDeleteUserResponse {
+    user_id: Uuid,
+    /// False when the row was already gone: deletion is idempotent
+    /// and a repeat call reports the same end state.
+    profile_existed: bool,
+    sessions_deleted: u64,
+}
+
+/// `DELETE /admin/v1/users/{user_id}` -- user-wide data deletion for
+/// the tier account service: terminate every session of the user,
+/// then hand the profile to profile-service's deletion pipeline. Its
+/// 202 means the pending-delete state is durable (user blocked, PATs
+/// revoked, audit written); the profile revocation worker hard-deletes
+/// the row with its FK cascades once devserver-control confirms the
+/// data plane is gone. Idempotent per step; any failure answers 502
+/// so the caller retries, and 200 means both steps are durably done.
+async fn admin_delete_user(
+    State(state): State<AppState>,
+    Path(user_id): Path<Uuid>,
+) -> Result<Json<AdminDeleteUserResponse>> {
+    // Sessions first: the sweep keys on the user id inside each
+    // record, and after the cascade lands a leftover record would
+    // linger orphaned until its TTL.
+    let sessions_deleted = delete_sessions_for_user(&state, user_id).await?;
+    let profile_existed = match state.cfg.profile_client.delete_user(user_id).await {
+        Ok(()) => true,
+        Err(ProfileError::NotFound) => false,
+        Err(e) => return Err(e.into()),
+    };
+    Ok(Json(AdminDeleteUserResponse {
+        user_id,
+        profile_existed,
+        sessions_deleted,
+    }))
+}
+
+/// Delete every session record belonging to `user_id`. tower-sessions
+/// stores opaque records keyed by session id with no user index, so
+/// the sweep lists live ids, loads each through the store's own
+/// codec, and deletes the matches. Account deletion is rare and the
+/// table is bounded by the 30-day inactivity TTL, so the per-row
+/// round trips beat maintaining a parallel user index that TTL
+/// expiry would orphan. The id scan reads the store's default
+/// `tower_sessions.session` table; keep it in sync with the
+/// PostgresStore construction in main.rs.
+async fn delete_sessions_for_user(state: &AppState, user_id: Uuid) -> Result<u64> {
+    let ids = sqlx::query_scalar::<_, String>(
+        r#"SELECT id FROM "tower_sessions"."session" WHERE expiry_date > now()"#,
+    )
+    .fetch_all(&state.pool)
+    .await
+    .map_err(|e| Error::Anyhow(anyhow::anyhow!("session sweep list: {e}")))?;
+    let mut deleted = 0_u64;
+    for raw in ids {
+        let Ok(id) = raw.parse::<SessionId>() else {
+            continue;
+        };
+        let Some(record) = state
+            .store
+            .load(&id)
+            .await
+            .map_err(|e| Error::Anyhow(anyhow::anyhow!("session sweep load: {e}")))?
+        else {
+            continue;
+        };
+        let owned = record
+            .data
+            .get(KEY_USER)
+            .and_then(|v| serde_json::from_value::<Uuid>(v.clone()).ok())
+            == Some(user_id);
+        if owned {
+            state
+                .store
+                .delete(&id)
+                .await
+                .map_err(|e| Error::Anyhow(anyhow::anyhow!("session sweep delete: {e}")))?;
+            deleted += 1;
+        }
+    }
+    Ok(deleted)
 }
 
 #[derive(Debug, Deserialize)]

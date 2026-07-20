@@ -83,7 +83,7 @@ Optional knobs:
 |----------------------------|---------------------------|-----------------------|
 | `BIND_ADDR`                | `127.0.0.1:7000`          | listen address        |
 | `COOKIE_SECURE`            | `false`                   | HTTPS-only cookie     |
-| `IDENTITY_ADMIN_TOKEN`     | unset                     | enables identity's operator PAT surface |
+| `IDENTITY_ADMIN_TOKEN`     | unset                     | enables the `/admin/v1/*` operator surface (unset = the routes 404) |
 | `RUSTRICT_ALLOWLIST`       | unset                     | comma-separated usernames exempt from the profanity filter |
 | `IDENTITY_OAUTH_ENDPOINTS_BASE` | unset (stock github.com) | GitHub OAuth/API endpoint origin override for local e2e stubs; never set in production |
 
@@ -150,6 +150,16 @@ Internal (Bearer-gated by `IDENTITY_INTERNAL_TOKEN`):
 The validate route is called by devserver-proxy during the tunnel handshake. The primary PAT brute-force throttle runs one hop earlier in devserver-proxy, keyed on a hash of the candidate token; this handler runs a defense-in-depth twin of the same throttle. A per-IP governor would be useless at either hop (every request arrives from one container IP). See identity's `design.md` for the rationale.
 
 The whoami route is called by tier-local services that hold a user's `id_session` cookie value and need its owner without proxying the public `/api/me`. It answers `{"user": {"id", "username", "blocked"}, "session": {"authenticated_at": rfc3339 | null}}`; `authenticated_at` is null when the record carries no stamp, which callers gating on recent authentication must treat as unprovable. Unknown, expired, malformed, pre-auth, and deleted-user sessions all get the same 401.
+
+Operator admin (Bearer-gated by `IDENTITY_ADMIN_TOKEN`; unset token = the whole surface answers 404):
+
+| Method | Path                                     | Purpose                              |
+|--------|------------------------------------------|--------------------------------------|
+| POST   | `/admin/v1/tokens`                       | mint a PAT by email                  |
+| POST   | `/admin/v1/users/{id}/access/revoke`     | revoke every PAT + evict tunnels     |
+| DELETE | `/admin/v1/users/{id}`                   | delete sessions + profile row        |
+
+The two user routes are the account contract for the tier account service: idempotent per step, 200 with a per-step report only when every step is durably done, 502 on any step failure so the caller retries. See identity's `design.md` for the step semantics.
 
 ## Design rationale
 

@@ -135,7 +135,13 @@ impl TestApp {
             .unwrap(),
             providers: vec![Arc::new(provider)],
         });
-        let router = http::router(cfg, store, api_tokens.clone(), TokenThrottle::new());
+        let router = http::router(
+            cfg,
+            store,
+            pool.clone(),
+            api_tokens.clone(),
+            TokenThrottle::new(),
+        );
 
         Self {
             router,

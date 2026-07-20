@@ -151,8 +151,13 @@ impl TestEnv {
             .unwrap(),
             providers: vec![Arc::new(provider)],
         });
-        let (public_router, internal_router) =
-            http::routers(cfg, store, api_tokens_for_state, TokenThrottle::new());
+        let (public_router, internal_router) = http::routers(
+            cfg,
+            store,
+            pool.clone(),
+            api_tokens_for_state,
+            TokenThrottle::new(),
+        );
         let router = public_router.clone().merge(internal_router);
 
         Self {

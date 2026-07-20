@@ -78,11 +78,16 @@ async fn run() -> anyhow::Result<()> {
 
     let store = PostgresStore::new(pool.clone());
 
-    let api_tokens = ApiTokenService::with_admission_signer(pool, admission_signer);
+    let api_tokens = ApiTokenService::with_admission_signer(pool.clone(), admission_signer);
     let token_throttle = TokenThrottle::new();
 
-    let (public, internal) =
-        http::routers(Arc::new(cfg.clone()), store, api_tokens, token_throttle);
+    let (public, internal) = http::routers(
+        Arc::new(cfg.clone()),
+        store,
+        pool,
+        api_tokens,
+        token_throttle,
+    );
     let public_listener = tokio::net::TcpListener::bind(cfg.bind_addr).await?;
     let internal_listener = tokio::net::TcpListener::bind(cfg.internal_bind_addr).await?;
     let shutdown = tokio_util::sync::CancellationToken::new();

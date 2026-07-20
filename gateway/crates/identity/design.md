@@ -19,6 +19,7 @@ axum HTTP server with three layers of routing under `id.chan.app`:
 1. `/auth/*`: pre-session OAuth flow. Sets a transient session key (`pending_oauth`) carrying CSRF state and the PKCE verifier; the callback consumes it and either upgrades the session to authenticated (`user_id`) or fails.
 2. `/api/*`: session-gated JSON API for the embedded SPA. Covers `me`, profile management, PAT lifecycle, the workspace list, and the devserver-gate mint endpoint.
 3. `/internal/v1/*`: Bearer-gated endpoints for sibling services over the private network. Lives on its own sub-router so the session middleware doesn't try to load a cookie session for a non-cookie caller. `/internal/v1/tokens/validate` is called by chan-tunnel-server during handshake and wraps a per-token-fingerprint throttle as defense in depth alongside the primary throttle in devserver-proxy. `/internal/v1/sessions/whoami` resolves one `id_session` cookie value to its user (stable id, username, blocked flag) plus the session's `authenticated_at` stamp, so tier-local services can resolve a browser session without proxying the public `/api/me`; every refusal is the same 401 so malformed, unknown, expired, pre-auth, and deleted-user sessions are indistinguishable on the wire.
+4. `/admin/v1/*`: privileged surface gated by `IDENTITY_ADMIN_TOKEN` (empty token = the routes answer 404 as if absent). `POST /admin/v1/tokens` mints a PAT by email for chan-gateway-admin. `POST /admin/v1/users/{user_id}/access/revoke` and `DELETE /admin/v1/users/{user_id}` form the user-wide account contract the tier account service drives for deletion and entitlement-loss deprovisioning.
 
 Static SPA assets are baked in at build time via `rust_embed` and served by `gateway_common::static_files::serve`. Anything not matched by an explicit route falls through to the static handler; paths without an extension serve `index.html` (SPA fallback).
 
@@ -210,6 +211,23 @@ Failures keep HTTP 404 but the body is a superset of the plain `{"error": msg}` 
 2. Identity makes a best-effort immediate tunnel/session cut to reduce latency and returns `202 Accepted` after flushing the web session.
 3. Profile's durable worker confirms a first post-commit fleet cut, waits the full entry-credential lifetime plus symmetric clock skew, then requires a second fleet-wide cut before deleting the user. The FK cascades happen only at that confirmed finalization point.
 4. Generic admin unblock refuses the account while the `AccountDelete` job exists; deletion cancellation requires a future explicit transaction.
+
+### Admin account contract
+
+The `/admin/v1/users/*` routes are the service-to-service variant of account delete and entitlement-loss deprovisioning, built for a caller that runs a durable, retrying job (the tier account service). Both are idempotent per step, answer a per-step report on 200 only when every step is durably done, and answer 502 on any step failure so the caller retries; a missing user converges to a zeroed success because a completed delete already holds the goal state.
+
+`POST /admin/v1/users/{user_id}/access/revoke`:
+
+1. Resolve the user (the report carries the username; a missing user converges to a zeroed success).
+2. Soft-revoke every live PAT in one statement and write one canonical `auth_audit` (`access_revoked`) entry; retries flip no rows and write nothing.
+3. Evict every live tunnel through devserver-control `kill_owner_tunnels`. An eviction failure answers 502 rather than silently skipping the eviction half.
+
+`DELETE /admin/v1/users/{user_id}`:
+
+1. Sweep every session record of the user: tower-sessions keys opaque records by session id with no user index, so the sweep lists live ids, loads each through the store's own codec, and deletes the matches. Account deletion is rare and the table is bounded by the 30-day inactivity TTL, so the per-row round trips beat a parallel user index that TTL expiry would orphan.
+2. `profile.delete_user(uid)`; its 202 records the durable pending-delete (user blocked, PATs revoked, audit written), and profile's revocation worker performs the FK cascades at the confirmed finalization point (see Account delete above).
+
+Unlike the browser `DELETE /api/profile` (session-gated, scoped to the caller's own account), the admin contract is service-gated and splits revocation and deletion so the caller's state machine can order and retry them independently.
 
 ## Key decisions
 
