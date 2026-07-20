@@ -349,6 +349,28 @@ async fn whoami_deleted_user_is_401() {
     app.cleanup().await;
 }
 
+#[tokio::test]
+async fn whoami_expired_session_is_401() {
+    let app = TestApp::new().await;
+    let uid = Uuid::new_v4();
+    let mut data = HashMap::new();
+    data.insert("user_id".to_string(), json!(uid));
+    let record = Record {
+        id: Default::default(),
+        data,
+        // The store's load() filters expiry_date <= now, so an expired
+        // record takes the same 401 path as an unknown one.
+        expiry_date: OffsetDateTime::now_utc() - Duration::hours(1),
+    };
+    app.store.save(&record).await.expect("save session");
+    let session = record.id.to_string();
+
+    let (status, _) = whoami(&app, Some(INTERNAL_TOKEN), &session).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+
+    app.cleanup().await;
+}
+
 /// Tiny cookie-jar client for the login flow: keeps the session
 /// cookie between calls so the callback can find the pending state.
 struct Client<'a> {
