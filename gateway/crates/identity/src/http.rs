@@ -13,7 +13,10 @@ use rustrict::CensorStr;
 use serde::{Deserialize, Serialize};
 use subtle::ConstantTimeEq;
 use tower_http::trace::TraceLayer;
-use tower_sessions::{cookie::time::Duration, Expiry, Session, SessionManagerLayer};
+use tower_sessions::{
+    cookie::time::Duration, session::Id as SessionId, session_store::SessionStore, Expiry, Session,
+    SessionManagerLayer,
+};
 use tower_sessions_sqlx_store::PostgresStore;
 use uuid::Uuid;
 
@@ -53,10 +56,20 @@ const KEY_PENDING: &str = "pending_oauth";
 /// at the dashboard. Stored as a relative path; the callback
 /// validates the prefix before using it.
 const KEY_POST_LOGIN_REDIRECT: &str = "post_login_redirect";
+/// When the session was last authenticated. Stamped once at the OAuth
+/// privilege boundary next to KEY_USER; tier-local services read it
+/// through /internal/v1/sessions/whoami to gate flows that require
+/// proof of recent authentication. Callers must fail closed when the
+/// key is absent from a record.
+const KEY_AUTHENTICATED_AT: &str = "authenticated_at";
 
 #[derive(Clone)]
 pub struct AppState {
     pub cfg: Arc<Config>,
+    /// Direct handle on the session store so
+    /// /internal/v1/sessions/whoami can load a record by id; the axum
+    /// Session extractor only ever resolves the caller's own cookie.
+    pub store: PostgresStore,
     pub api_tokens: ApiTokenService,
     /// Per-token-fingerprint rate limiter applied to
     /// /internal/v1/tokens/validate. Defense in depth: devserver-proxy
@@ -147,7 +160,7 @@ pub fn routers(
     // crates/identity/design.md. The `__Host-` name additionally makes
     // the browser reject any Domain-carrying shadow of it (A11), which
     // is why the insecure dev fallback must use a different name.
-    let session_layer = SessionManagerLayer::new(store)
+    let session_layer = SessionManagerLayer::new(store.clone())
         .with_name(session_cookie_name(cfg.cookie_secure))
         .with_secure(cfg.cookie_secure)
         .with_http_only(true)
@@ -156,6 +169,7 @@ pub fn routers(
 
     let state = AppState {
         cfg,
+        store,
         api_tokens,
         token_throttle,
         desktop_redemptions: Default::default(),
@@ -166,16 +180,18 @@ pub fn routers(
     // sub-router so the session layer doesn't try to load a cookie
     // session for callers that don't have one.
     //
-    // No per-IP rate limit here. The only caller is devserver-proxy,
-    // so a governor at this hop sees one peer IP regardless of how
-    // many distinct clients are probing tokens upstream: a single
-    // global bucket that can lock out legitimate `chan devserver`
-    // handshakes while leaving real attacker shape invisible. The
-    // primary PAT brute-force gate sits in devserver-proxy, keyed on
-    // a hash of the candidate token; `token_throttle` inside the
-    // validate handler is its defense-in-depth twin.
+    // No per-IP rate limit here. Callers are sibling services over the
+    // private network, so a governor at this hop sees one peer IP
+    // regardless of how many distinct clients are probing tokens
+    // upstream: a single global bucket that can lock out legitimate
+    // `chan devserver` handshakes while leaving real attacker shape
+    // invisible. The primary PAT brute-force gate sits in
+    // devserver-proxy, keyed on a hash of the candidate token;
+    // `token_throttle` inside the validate handler is its
+    // defense-in-depth twin.
     let internal = Router::new()
         .route("/internal/v1/tokens/validate", post(validate_token))
+        .route("/internal/v1/sessions/whoami", post(session_whoami))
         .route_layer(middleware::from_fn_with_state(state.clone(), internal_auth));
 
     // /admin/v1/* is the operator surface for chan-gateway-admin,
@@ -526,6 +542,14 @@ async fn auth_callback_inner(
 
     session
         .insert(KEY_USER, &user.id)
+        .await
+        .map_err(|e| Error::Anyhow(anyhow::anyhow!("session insert: {e}")))?;
+
+    // Stamp the authentication time in the same record: both keys land
+    // together on the post-cycle_id session, so an authenticated
+    // session never carries one without the other.
+    session
+        .insert(KEY_AUTHENTICATED_AT, Utc::now())
         .await
         .map_err(|e| Error::Anyhow(anyhow::anyhow!("session insert: {e}")))?;
 
@@ -2074,6 +2098,87 @@ async fn validate_token(
         register_devserver_row(&state, v.user_id, &body.token, &name, &v.scopes).await;
     }
     Ok(Json(v))
+}
+
+#[derive(Debug, Deserialize)]
+struct SessionWhoamiBody {
+    /// Raw `id_session` cookie value: the base64url session id itself.
+    session: String,
+}
+
+#[derive(Serialize)]
+struct SessionWhoamiResponse {
+    user: SessionWhoamiUser,
+    session: SessionWhoamiSession,
+}
+
+#[derive(Serialize)]
+struct SessionWhoamiUser {
+    id: Uuid,
+    username: String,
+    /// Computed from `blocked_at` so tier-local callers get a plain
+    /// boolean instead of reimplementing the timestamp check.
+    blocked: bool,
+}
+
+#[derive(Serialize)]
+struct SessionWhoamiSession {
+    /// rfc3339; null when the record carries no authentication stamp.
+    /// Callers gating on recent authentication must treat null as
+    /// unprovable and fail closed.
+    authenticated_at: Option<DateTime<Utc>>,
+}
+
+/// `POST /internal/v1/sessions/whoami` -- resolve one `id_session`
+/// cookie value to its user, so tier-local services never proxy the
+/// public `/api/me` with a forwarded browser cookie. Every refusal is
+/// the same 401: malformed, unknown, expired, pre-auth, and
+/// deleted-user sessions are indistinguishable on the wire.
+async fn session_whoami(
+    State(state): State<AppState>,
+    Json(body): Json<SessionWhoamiBody>,
+) -> Result<Json<SessionWhoamiResponse>> {
+    // The cookie value IS the session id (22-char base64url, unsigned:
+    // the id's 128 bits of randomness are the credential). Anything
+    // unparseable was never issued by this service.
+    let Ok(id) = body.session.parse::<SessionId>() else {
+        return Err(Error::Unauthorized);
+    };
+    // load() filters expired records, so a lapsed id takes the same
+    // 401 path as a forged one.
+    let record = state
+        .store
+        .load(&id)
+        .await
+        .map_err(|e| Error::Anyhow(anyhow::anyhow!("session load: {e}")))?
+        .ok_or(Error::Unauthorized)?;
+    // A record without KEY_USER is pre-auth (pending OAuth) state.
+    let uid = record
+        .data
+        .get(KEY_USER)
+        .and_then(|v| serde_json::from_value::<Uuid>(v.clone()).ok())
+        .ok_or(Error::Unauthorized)?;
+    let authenticated_at = record
+        .data
+        .get(KEY_AUTHENTICATED_AT)
+        .and_then(|v| serde_json::from_value::<DateTime<Utc>>(v.clone()).ok());
+    // The user row lives in profile; a session that outlived its user
+    // is dead even inside its TTL.
+    let user = state
+        .cfg
+        .profile_client
+        .get_user(uid)
+        .await?
+        .ok_or(Error::Unauthorized)?;
+    let blocked = user.is_blocked();
+    Ok(Json(SessionWhoamiResponse {
+        user: SessionWhoamiUser {
+            id: user.id,
+            username: user.username,
+            blocked,
+        },
+        session: SessionWhoamiSession { authenticated_at },
+    }))
 }
 
 /// Sanitize a tunnel-announced display name: drop invisible/spoofing

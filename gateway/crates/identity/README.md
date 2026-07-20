@@ -142,11 +142,14 @@ A 404 keeps the `{"error": msg}` shape and adds `reason` (`no_devserver`, `devse
 
 Internal (Bearer-gated by `IDENTITY_INTERNAL_TOKEN`):
 
-| Method | Path                                   | Purpose                |
-|--------|----------------------------------------|------------------------|
-| POST   | `/internal/v1/tokens/validate`         | validate a PAT         |
+| Method | Path                                   | Purpose                              |
+|--------|----------------------------------------|--------------------------------------|
+| POST   | `/internal/v1/tokens/validate`         | validate a PAT                       |
+| POST   | `/internal/v1/sessions/whoami`         | resolve an `id_session` cookie value |
 
-The internal route is called by devserver-proxy during the tunnel handshake. The primary PAT brute-force throttle runs one hop earlier in devserver-proxy, keyed on a hash of the candidate token; this handler runs a defense-in-depth twin of the same throttle. A per-IP governor would be useless at either hop (every request arrives from one container IP). See identity's `design.md` for the rationale.
+The validate route is called by devserver-proxy during the tunnel handshake. The primary PAT brute-force throttle runs one hop earlier in devserver-proxy, keyed on a hash of the candidate token; this handler runs a defense-in-depth twin of the same throttle. A per-IP governor would be useless at either hop (every request arrives from one container IP). See identity's `design.md` for the rationale.
+
+The whoami route is called by tier-local services that hold a user's `id_session` cookie value and need its owner without proxying the public `/api/me`. It answers `{"user": {"id", "username", "blocked"}, "session": {"authenticated_at": rfc3339 | null}}`; `authenticated_at` is null when the record carries no stamp, which callers gating on recent authentication must treat as unprovable. Unknown, expired, malformed, pre-auth, and deleted-user sessions all get the same 401.
 
 ## Design rationale
 

@@ -18,7 +18,7 @@ axum HTTP server with three layers of routing under `id.chan.app`:
 
 1. `/auth/*`: pre-session OAuth flow. Sets a transient session key (`pending_oauth`) carrying CSRF state and the PKCE verifier; the callback consumes it and either upgrades the session to authenticated (`user_id`) or fails.
 2. `/api/*`: session-gated JSON API for the embedded SPA. Covers `me`, profile management, PAT lifecycle, the workspace list, and the devserver-gate mint endpoint.
-3. `/internal/v1/tokens/validate`: Bearer-gated endpoint called by chan-tunnel-server during handshake. Lives on its own sub-router so the session middleware doesn't try to load a cookie session for a non-cookie caller. A per-token-fingerprint throttle wraps it as defense in depth alongside the primary throttle in devserver-proxy.
+3. `/internal/v1/*`: Bearer-gated endpoints for sibling services over the private network. Lives on its own sub-router so the session middleware doesn't try to load a cookie session for a non-cookie caller. `/internal/v1/tokens/validate` is called by chan-tunnel-server during handshake and wraps a per-token-fingerprint throttle as defense in depth alongside the primary throttle in devserver-proxy. `/internal/v1/sessions/whoami` resolves one `id_session` cookie value to its user (stable id, username, blocked flag) plus the session's `authenticated_at` stamp, so tier-local services can resolve a browser session without proxying the public `/api/me`; every refusal is the same 401 so malformed, unknown, expired, pre-auth, and deleted-user sessions are indistinguishable on the wire.
 
 Static SPA assets are baked in at build time via `rust_embed` and served by `gateway_common::static_files::serve`. Anything not matched by an explicit route falls through to the static handler; paths without an extension serve `index.html` (SPA fallback).
 
@@ -245,6 +245,7 @@ Additional username guards:
 - Cookie name `__Host-id_session` (`id_session_insecure_dev` when `COOKIE_SECURE=false`: browsers reject `__Host-` names without Secure). **Host-only on `id.chan.app`.** No `Domain` attribute.
 - `HttpOnly`, `SameSite=Lax`, 30-day inactivity expiry.
 - `Secure` follows the `COOKIE_SECURE` env var.
+- An authenticated record carries `user_id` and `authenticated_at` (rfc3339), both stamped at the OAuth privilege boundary. `authenticated_at` is read only through `/internal/v1/sessions/whoami`; flows that require recent authentication treat a missing stamp as unprovable and fail closed.
 - devserver-proxy does **not** read this cookie. Cross-service auth uses a
   short-lived Ed25519 entry credential, not cookie sharing.
 
@@ -283,7 +284,7 @@ The origin strings stay coupled to DNS, the per-node wildcard TLS certificates, 
 
 ## Invariants
 
-- A signed-in session always carries `user_id: Uuid` under `KEY_USER`.
+- A signed-in session always carries `user_id: Uuid` under `KEY_USER`, with `authenticated_at` stamped beside it at the same privilege boundary.
 - `pending_oauth` is removed on the first read in the callback. A cold-reloaded callback (missing pending) returns 400, not a fresh flow.
 - Blocked accounts cannot start a session: the login flow writes `login_denied` and returns 403.
 - Accounts whose `oauth_login` flag resolves to false cannot start a session either: the login flow writes `login_denied` and 303s to `/?denied=oauth_login` so the SPA can explain why.
